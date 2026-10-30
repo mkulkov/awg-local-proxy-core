@@ -1,0 +1,62 @@
+name: Core CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-core:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+      GOFLAGS: '-p=2'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Check toolchain
+        shell: pwsh
+        run: |
+          go version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gcc --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check formatting and pinned modules
+        shell: pwsh
+        run: |
+          $files = @(git ls-files '*.go')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($files.Count -eq 0) { throw 'No Go source files found' }
+          $unformatted = @(gofmt -l $files)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($unformatted.Count -gt 0) { $unformatted; throw 'Go files require gofmt' }
+          go mod download
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go mod verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Synthetic userspace tests and vet
+        shell: pwsh
+        run: |
+          go test ./... -timeout 300s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Targeted race detector
+        shell: pwsh
+        run: |
+          $raceTests = 'TestRealAWG|TestParserAndControlBoundaries|TestIPacketSafetyGuard|TestHTTPAcceptedConnectionCap|TestManagedChildEOFClosesRealListeners|TestConnectFailuresLeavePortsAndOtherProcessesAlone|TestSOCKSUnsupportedCommandsFailExplicitly|TestRelayRefreshesIdleDuringOneWayTraffic'
+          go test -race ./core -run $raceTests -count=1 -timeout 180s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -57,3 +57,9 @@ Tests create ephemeral keys and userspace AWG peers on local UDP endpoints. They
 do not use a user's configuration, production server or host routes. Passing lab
 tests does not establish compatibility with a particular user's server or every
 AmneziaWG protocol version.
+
+[Core CI](.github/workflows/core-ci.yml) runs the synthetic suite, formatting,
+module verification, vet and targeted race checks on Windows with Go 1.27.3.
+It needs no VPN credentials and publishes no artifacts. The optional desktop
+product supervisor lab requires an explicitly supplied test-helper executable;
+it is skipped in this independent core workflow.
