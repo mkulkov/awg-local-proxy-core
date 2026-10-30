@@ -85,11 +85,13 @@ func makeSession(ctx context.Context, c *Config, resolve bool) (*Session, error)
 	if e != nil {
 		return nil, errors.New("userspace stack creation failed")
 	}
-	d := device.NewDevice(tun, conn.NewStdNetBind(), device.NewLogger(device.LogLevelSilent, ""))
+	managedTun := newStartupTun(tun)
+	d := device.NewDevice(managedTun, conn.NewStdNetBind(), device.NewLogger(device.LogLevelSilent, ""))
 	if e = d.IpcSet(c.UAPI(ep)); e != nil {
 		d.Close()
 		return nil, ErrConfig
 	}
+	managedTun.configured()
 	// Drop all textual keys/configuration once the engine has consumed UAPI.
 	c.fields = nil
 	child, cancel := context.WithCancel(context.Background())

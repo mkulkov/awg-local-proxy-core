@@ -52,3 +52,36 @@ Not established: connection to the user's server, a complete version matrix for
 AWG families, external physical-egress capture, cross-network sleep/resume,
 all 100 cycles under race, or long-term handle/heap trends. The selected runtime
 works in the controlled lab; these results do not establish those other claims.
+
+## Deterministic startup-race regression
+
+The first public Windows CI run exposed an initialization race in the pinned
+engine: `NewDevice` starts `RoutineReadFromTUN`, which can capture the default
+S4 offset before `IpcSet` applies S4=10. The first client DNS packet was then sent
+with zero padding; its retry reached the peer, whose first reply had the same
+stale offset. The two lost packets exhausted the existing two DNS attempts.
+Test-only transport/TUN traces established the incorrect first-packet lengths;
+the DNS handler had parsed the request and successfully written a valid reply.
+Pure-netstack DNS was independently isolated from AWG and passed repeated lookups.
+
+The original `startupTun` adapter waits for successful initial `IpcSet`, returns
+zero packets from the constructor's pending first read, then lets the official
+loop recalculate its offset before consuming any real packet. It suppresses the
+netstack's queued EventUp so configuration validation does not implicitly open
+UDP. No configuration value, cryptography, network route or resolver fallback
+was changed, and no extra probe/retry was added.
+
+Regressions passed five consecutive times: the official reader initially
+requests offset16, but its first real underlying read receives offset26 after
+S4=10; closing an unconfigured/invalid device unblocks the gate; and the bind's
+Open counter remains zero during validation. The userspace server is deliberately
+left unmodified, with its stale first read forced before IpcSet. The real domain
+probe succeeds using exactly the two existing tunneled DNS attempts, rather than
+depending on an upgraded remote server. Temporary diagnostic helpers are retained
+under ignored `.local/diagnostics` and are not part of the source/release.
+
+After the startup fix, the full suite with the actual product helper passed in
+31.6 seconds, including 100 real cycles in 8.6 seconds. Targeted race checks for
+the real AWG path, actual CLI, product supervisor and both startup regressions
+passed in 22.0 seconds; `go vet`, actionlint 1.7.12 and the diff whitespace check
+also passed. The public CI rerun is a separate check after publishing this change.

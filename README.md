@@ -26,6 +26,13 @@ loopback is not an application allowlist. There is no DIRECT fallback.
 Relay traffic in either direction refreshes a shared five-minute idle timeout;
 active downloads are not cut off by an absolute five-minute session deadline.
 
+The original startup TUN adapter coordinates initial configuration with the
+pinned engine's constructor-started reader, so the first real packet uses the
+configured S4 offset. It also suppresses the netstack's queued automatic EventUp;
+only an explicit connection starts the UDP bind. A legacy unmodified Go peer's
+first incorrectly padded reply is tolerated by the pinned resolver's existing
+two bounded DNS attempts inside the tunnel; no extra probe or host retry is added.
+
 `Connected` means the explicitly configured HTTP(S) probe and a real handshake
 were confirmed. `get_status` does not poll websites or infer failure merely from
 an old idle handshake. A failed actual destination dial changes status to

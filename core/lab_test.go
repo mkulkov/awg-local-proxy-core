@@ -34,11 +34,14 @@ import (
 const awgLab = "jc=1\njmin=5\njmax=10\ns1=10\ns2=20\ns3=10\ns4=10\nh1=100001\nh2=100002\nh3=100003\nh4=100004\n"
 
 type lab struct {
-	config      string
-	dev         *device.Device
-	close       func()
-	dnsQueries  atomic.Int32
-	rejectProbe atomic.Bool
+	config         string
+	dev            *device.Device
+	close          func()
+	dnsQueries     atomic.Int32
+	dnsResponses   atomic.Int32
+	dnsParseErrors atomic.Int32
+	dnsWriteErrors atomic.Int32
+	rejectProbe    atomic.Bool
 }
 
 func port(t *testing.T, network string) int {
@@ -73,7 +76,22 @@ func setupLab(t *testing.T) *lab {
 	if e != nil {
 		t.Fatal(e)
 	}
-	d := device.NewDevice(tun, conn.NewStdNetBind(), device.NewLogger(device.LogLevelSilent, ""))
+	// Model an unmodified official Go peer deterministically: its first TUN
+	// read has captured the default S4 before IpcSet. No server startup adapter
+	// is applied, so the client must tolerate its first lost padded reply using
+	// the pinned resolver's existing bounded, tunnel-only DNS retransmission.
+	legacyTun := &firstReadSignalTun{Device: tun, started: make(chan int, 1)}
+	d := device.NewDevice(legacyTun, conn.NewStdNetBind(), device.NewLogger(device.LogLevelSilent, ""))
+	select {
+	case offset := <-legacyTun.started:
+		if offset != device.MessageTransportHeaderSize {
+			d.Close()
+			t.Fatal("legacy peer did not capture the default offset")
+		}
+	case <-time.After(3 * time.Second):
+		d.Close()
+		t.Fatal("legacy peer reader did not start")
+	}
 	uapi := fmt.Sprintf("private_key=%s\nlisten_port=%d\n%sreplace_peers=true\npublic_key=%s\nallowed_ip=10.201.0.2/32\n", hex.EncodeToString(server.Bytes()), udp, awgLab, hex.EncodeToString(client.PublicKey().Bytes()))
 	if e = d.IpcSet(uapi); e != nil {
 		d.Close()
@@ -113,6 +131,7 @@ func setupLab(t *testing.T) *lab {
 			lab.dnsQueries.Add(1)
 			var msg dnsmessage.Message
 			if msg.Unpack(b[:n]) != nil || len(msg.Questions) != 1 {
+				lab.dnsParseErrors.Add(1)
 				continue
 			}
 			q := msg.Questions[0]
@@ -126,7 +145,13 @@ func setupLab(t *testing.T) *lab {
 			}
 			out, e := resp.Pack()
 			if e == nil {
-				_, _ = dns.WriteTo(out, addr)
+				if _, e = dns.WriteTo(out, addr); e != nil {
+					lab.dnsWriteErrors.Add(1)
+				} else {
+					lab.dnsResponses.Add(1)
+				}
+			} else {
+				lab.dnsParseErrors.Add(1)
 			}
 		}
 	}()
@@ -143,14 +168,14 @@ func TestRealAWGSOCKSHTTPAndFailClosed(t *testing.T) {
 	defer cancel()
 	s, e := Connect(ctx, ConnectOptions{Config: lab.config, SOCKSAddress: socks, HTTPAddress: httpAddr, ProbeURL: "http://lab.invalid/"})
 	if e != nil {
-		t.Fatal(e)
+		t.Fatalf("%v (synthetic DNS: queries=%d responses=%d parse_errors=%d write_errors=%d)", e, lab.dnsQueries.Load(), lab.dnsResponses.Load(), lab.dnsParseErrors.Load(), lab.dnsWriteErrors.Load())
 	}
 	defer s.Close()
 	if st := s.Status(); st.State != "Connected" || !st.TunnelVerified || st.HandshakeAt == nil || !st.ListenerReady {
 		t.Fatalf("unverified status %#v", st)
 	}
-	if lab.dnsQueries.Load() == 0 {
-		t.Fatal("destination DNS did not reach userspace peer")
+	if lab.dnsQueries.Load() != 2 {
+		t.Fatalf("legacy peer should require exactly the two existing tunneled DNS attempts, got %d", lab.dnsQueries.Load())
 	}
 	// HTTP forwarding and CONNECT both cross the actual encrypted AWG pair.
 	proxyURL, _ := url.Parse("http://" + httpAddr)
