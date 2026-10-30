@@ -57,6 +57,6 @@ jobs:
       - name: Targeted race detector
         shell: pwsh
         run: |
-          $raceTests = 'TestRealAWG|TestParserAndControlBoundaries|TestIPacketSafetyGuard|TestHTTPAcceptedConnectionCap|TestManagedChildEOFClosesRealListeners|TestConnectFailuresLeavePortsAndOtherProcessesAlone|TestSOCKSUnsupportedCommandsFailExplicitly|TestRelayRefreshesIdleDuringOneWayTraffic|TestStartupTun'
+          $raceTests = 'TestRealAWG|TestAWG3|TestParserAndControlBoundaries|TestIPacketSafetyGuard|TestHTTPAcceptedConnectionCap|TestManagedChildEOFClosesRealListeners|TestConnectFailuresLeavePortsAndOtherProcessesAlone|TestSOCKSUnsupportedCommandsFailExplicitly|TestRelayRefreshesIdleDuringOneWayTraffic|TestStartupTun'
           go test -race ./core -run $raceTests -count=1 -timeout 180s
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

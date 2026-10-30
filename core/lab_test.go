@@ -32,6 +32,7 @@ import (
 )
 
 const awgLab = "jc=1\njmin=5\njmax=10\ns1=10\ns2=20\ns3=10\ns4=10\nh1=100001\nh2=100002\nh3=100003\nh4=100004\n"
+const awgLabINI = "Jc = 1\nJmin = 5\nJmax = 10\nS1 = 10\nS2 = 20\nS3 = 10\nS4 = 10\nH1 = 100001\nH2 = 100002\nH3 = 100003\nH4 = 100004\n"
 
 type lab struct {
 	config         string
@@ -62,6 +63,10 @@ func port(t *testing.T, network string) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 func setupLab(t *testing.T) *lab {
+	return setupLabWithFields(t, awgLab, awgLabINI)
+}
+
+func setupLabWithFields(t *testing.T, deviceFields, interfaceFields string) *lab {
 	t.Helper()
 	client, e := ecdh.X25519().GenerateKey(rand.Reader)
 	if e != nil {
@@ -92,7 +97,7 @@ func setupLab(t *testing.T) *lab {
 		d.Close()
 		t.Fatal("legacy peer reader did not start")
 	}
-	uapi := fmt.Sprintf("private_key=%s\nlisten_port=%d\n%sreplace_peers=true\npublic_key=%s\nallowed_ip=10.201.0.2/32\n", hex.EncodeToString(server.Bytes()), udp, awgLab, hex.EncodeToString(client.PublicKey().Bytes()))
+	uapi := fmt.Sprintf("private_key=%s\nlisten_port=%d\n%sreplace_peers=true\npublic_key=%s\nallowed_ip=10.201.0.2/32\n", hex.EncodeToString(server.Bytes()), udp, deviceFields, hex.EncodeToString(client.PublicKey().Bytes()))
 	if e = d.IpcSet(uapi); e != nil {
 		d.Close()
 		t.Fatal("lab server configuration failed")
@@ -155,7 +160,7 @@ func setupLab(t *testing.T) *lab {
 			}
 		}
 	}()
-	lab.config = fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.201.0.2/32\nDNS = 10.201.0.1\nJc = 1\nJmin = 5\nJmax = 10\nS1 = 10\nS2 = 20\nS3 = 10\nS4 = 10\nH1 = 100001\nH2 = 100002\nH3 = 100003\nH4 = 100004\n[Peer]\nPublicKey = %s\nEndpoint = 127.0.0.1:%d\nAllowedIPs = 0.0.0.0/0\n", base64.StdEncoding.EncodeToString(client.Bytes()), base64.StdEncoding.EncodeToString(server.PublicKey().Bytes()), udp)
+	lab.config = fmt.Sprintf("[Interface]\nPrivateKey = %s\nAddress = 10.201.0.2/32\nDNS = 10.201.0.1\n%s[Peer]\nPublicKey = %s\nEndpoint = 127.0.0.1:%d\nAllowedIPs = 0.0.0.0/0\n", base64.StdEncoding.EncodeToString(client.Bytes()), interfaceFields, base64.StdEncoding.EncodeToString(server.PublicKey().Bytes()), udp)
 	lab.close = func() { dns.Close(); hs.Close(); d.Close() }
 	t.Cleanup(lab.close)
 	return lab
@@ -635,6 +640,7 @@ func FuzzParseConfig(f *testing.F) {
 	}
 	f.Add(fmt.Sprintf("[Interface]\nPrivateKey=%s\nAddress=10.0.0.2/32\n[Peer]\nPublicKey=%s\nEndpoint=192.0.2.1:51820\nAllowedIPs=0.0.0.0/0\n", base64.StdEncoding.EncodeToString(a), base64.StdEncoding.EncodeToString(b)))
 	f.Add("vpn://invalid")
+	f.Add(syntheticAWG3Config())
 	f.Fuzz(func(t *testing.T, s string) {
 		if len(s) > MaxConfigBytes+1 {
 			t.Skip()

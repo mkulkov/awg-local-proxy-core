@@ -22,6 +22,20 @@ const maxDatagramBytes = 2016
 
 var ErrConfig = errors.New("unsupported or invalid client configuration")
 
+// Official AWG3 INI names (case-insensitive) and the pinned engine's UAPI names.
+// Keep aliases explicit: accepting arbitrary future fields would silently alter
+// the meaning of an imported configuration.
+var awg3FieldNames = map[string]string{
+	"contentpaddingaddition": "content_padding_addition",
+	"rekeyaftertime":         "rekey_after_time",
+	"rekeytimeout":           "rekey_timeout",
+	"rejectaftertime":        "reject_after_time",
+	"keepalivetimeout":       "keepalive_timeout",
+	"maxhandshakeattempts":   "max_handshake_attempts",
+	"randomtrailers":         "random_trailers",
+	"disablecookies":         "disable_cookies",
+}
+
 type Config struct {
 	Addresses, DNS []netip.Addr
 	Allowed        []netip.Prefix
@@ -38,6 +52,10 @@ func ParseConfig(input string) (*Config, error) {
 	section := ""
 	sections := map[string]bool{}
 	iface := map[string]bool{"privatekey": true, "address": true, "dns": true, "mtu": true, "jc": true, "jmin": true, "jmax": true, "s1": true, "s2": true, "s3": true, "s4": true, "h1": true, "h2": true, "h3": true, "h4": true, "i1": true, "i2": true, "i3": true, "i4": true, "i5": true}
+	iface["headerprotectionkey"] = true
+	for key := range awg3FieldNames {
+		iface[key] = true
+	}
 	peer := map[string]bool{"publickey": true, "presharedkey": true, "endpoint": true, "allowedips": true, "persistentkeepalive": true}
 	for _, line := range strings.Split(strings.TrimPrefix(input, "\ufeff"), "\n") {
 		line = strings.TrimSpace(line)
@@ -75,7 +93,7 @@ func ParseConfig(input string) (*Config, error) {
 			return nil, ErrConfig
 		}
 	}
-	for _, k := range []string{"interface.privatekey", "peer.publickey", "peer.presharedkey"} {
+	for _, k := range []string{"interface.privatekey", "peer.publickey", "peer.presharedkey", "interface.headerprotectionkey"} {
 		if v := c.fields[k]; v != "" {
 			b, e := base64.StdEncoding.Strict().DecodeString(v)
 			if e != nil || len(b) != 32 {
@@ -141,8 +159,31 @@ func ParseConfig(input string) (*Config, error) {
 			}
 		}
 	}
-	if v := c.fields["peer.persistentkeepalive"]; v != "" {
-		if _, e := strconv.ParseUint(v, 10, 16); e != nil {
+	for _, k := range []string{"peer.persistentkeepalive", "interface.rekeyaftertime", "interface.rekeytimeout", "interface.rejectaftertime", "interface.keepalivetimeout", "interface.maxhandshakeattempts"} {
+		if v := c.fields[k]; v != "" {
+			var r device.UintRange
+			// A single zero selects the engine default/off value. A mixed zero
+			// range can select immediate timers and create a busy retry loop.
+			if r.FromString(v) != nil || r.Lo() == 0 && r.Hi() != 0 {
+				return nil, ErrConfig
+			}
+			// The pinned timer code multiplies RejectAfterTime by three and
+			// increments/logs MaxHandshakeAttempts by up to two.
+			if k == "interface.rejectaftertime" && r.Hi() > 3074457345 || k == "interface.maxhandshakeattempts" && r.Hi() > ^uint32(0)-2 {
+				return nil, ErrConfig
+			}
+		}
+	}
+	for _, k := range []string{"randomtrailers", "disablecookies"} {
+		if v := c.fields["interface."+k]; v != "" {
+			if _, e := strconv.ParseBool(v); e != nil {
+				return nil, ErrConfig
+			}
+		}
+	}
+	var addition device.UintRange
+	if v := c.fields["interface.contentpaddingaddition"]; v != "" {
+		if addition.FromString(v) != nil || addition.Hi() > maxDatagramBytes {
 			return nil, ErrConfig
 		}
 	}
@@ -168,8 +209,15 @@ func ParseConfig(input string) (*Config, error) {
 	if value("jc") > 0 && (c.fields["interface.jmin"] == "" || c.fields["interface.jmax"] == "" || value("jmin") >= value("jmax")) {
 		return nil, ErrConfig
 	}
-	if value("s1")+device.MessageInitiationSize > maxDatagramBytes || value("s2")+device.MessageResponseSize > maxDatagramBytes || value("s3")+device.MessageCookieReplySize > maxDatagramBytes || uint64(c.MTU)+value("s4")+device.MessageTransportSize > maxDatagramBytes {
+	if value("s1")+device.MessageInitiationSize > maxDatagramBytes || value("s2")+device.MessageResponseSize > maxDatagramBytes || value("s3")+device.MessageCookieReplySize > maxDatagramBytes || uint64(c.MTU)+value("s4")+device.MessageTransportSize+uint64(addition.Hi()) > maxDatagramBytes {
 		return nil, ErrConfig
+	}
+	if c.fields["interface.headerprotectionkey"] != "" {
+		for _, k := range []string{"s1", "s2", "s3", "s4"} {
+			if value(k) < device.HeaderCipherNonceSize {
+				return nil, ErrConfig
+			}
+		}
 	}
 	for _, k := range []string{"h1", "h2", "h3", "h4"} {
 		if v := c.fields["interface."+k]; v != "" {
@@ -205,6 +253,12 @@ func (c *Config) UAPI(endpoint string) string {
 		}
 	}
 	key("private_key", "interface.privatekey")
+	key("header_protection_key", "interface.headerprotectionkey")
+	for src, dst := range awg3FieldNames {
+		if v := c.fields["interface."+src]; v != "" {
+			b.WriteString(dst + "=" + v + "\n")
+		}
+	}
 	for _, k := range []string{"jc", "jmin", "jmax", "s1", "s2", "s3", "s4", "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5"} {
 		if v := c.fields["interface."+k]; v != "" {
 			b.WriteString(k + "=" + v + "\n")
